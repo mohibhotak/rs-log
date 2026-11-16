@@ -1,0 +1,49 @@
+name: Update Stocks Data Monthly
+
+# Fullstandig omhamtning av ticker_info.json (sektor, industri, market cap m.m.), ca 3-5 h.
+# Originalet korde varje sondag; har en gang i manaden for att halla nere Actions-anvandningen.
+# Nya tickers fangas anda upp av den dagliga korningen.
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rs-repo-write
+  cancel-in-progress: false
+
+jobs:
+  update-stocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance curl_cffi requests pandas
+
+      - name: Run monthly stock update
+        run: python data_persist/update_stocks.py
+
+      - name: Commit and push updated ticker_info.json
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add data_persist/ticker_info.json
+          git diff --staged --quiet || git commit -m "Monthly ticker_info refresh $(date -u +'%Y-%m-%d')"
+          git pull --rebase
+          git push

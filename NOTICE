@@ -1,0 +1,6 @@
+This repository contains code from Fred6725/relative-strength
+(https://github.com/Fred6725/relative-strength), licensed under the Apache License 2.0,
+which is based on skyte/relative-strength and maximbelyayev/relative-strength.
+
+Modifications by mohibhotak (2026-11-16): GitHub Actions workflows changed to commit the
+generated CSV files to this repository, daily schedule changed, weekly ticker refresh made monthly.

@@ -1,0 +1,57 @@
+name: Generate RS Ratings
+
+# MBH-kopia av Fred6725/relative-strength (Apache-2.0).
+# Skillnad mot originalet: CSV-filerna committas i DETTA repo (output/), ingen extra token,
+# ingen push till rs-log eller TradingView-seeds.
+# 22:15 UTC mandag-fredag = 17:15 New York vintertid (efter stangning), fore SectorFlow-natten (03:00 Stockholm).
+
+on:
+  schedule:
+    - cron: '15 22 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rs-repo-write
+  cancel-in-progress: false
+
+jobs:
+  generate-rs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run relative strength calculation
+        run: python relative-strength.py true
+
+      - name: Check outputs exist
+        run: |
+          for f in rs_stocks.csv rs_industries.csv; do
+            test -s "output/$f" || { echo "output/$f saknas eller ar tom"; exit 1; }
+          done
+          head -3 output/rs_industries.csv
+
+      - name: Commit outputs and ticker_info cache
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add -f output/rs_stocks.csv output/rs_stocks_1.csv output/rs_stocks_2.csv output/rs_industries.csv output/RSRATING.csv data_persist/ticker_info.json || true
+          git diff --staged --quiet || git commit -m "RS Ratings update $(date -u +'%Y-%m-%d')"
+          git pull --rebase
+          git push
