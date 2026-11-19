@@ -47,11 +47,16 @@ jobs:
           done
           head -3 output/rs_industries.csv
 
+      - name: Daily archive (radata per aktie + bredd, se archive/README.md)
+        continue-on-error: true
+        run: python daily_archive.py
+
       - name: Commit outputs and ticker_info cache
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add -f output/rs_stocks.csv output/rs_stocks_1.csv output/rs_stocks_2.csv output/rs_industries.csv output/RSRATING.csv data_persist/ticker_info.json || true
+          git add -f archive/ || true
           git diff --staged --quiet || git commit -m "RS Ratings update $(date -u +'%Y-%m-%d')"
           git pull --rebase
           git push
