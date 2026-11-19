@@ -6,7 +6,7 @@
 #
 # Skriver (committas i repot):
 #   archive/daily/YYYY/YYYY-MM-DD.csv.gz  RADATA: en rad per aktie som handlades dagen, INGET urval.
-#                                          Kurs, volym, SMA20/50/200, ATR14, 52v topp/botten m.m.
+#                                          OHLCV + foregaende stangning + sektor/bransch (v1.1).
 #                                          Bredden kan raknas om med vilken definition som helst i efterhand.
 #   archive/index/YYYY/YYYY-MM-DD.csv     Index-ETF:er (TrendTracker-listan + VIX) med samma matt.
 #   archive/breadth_daily.csv             Bredd med FAST definition (BREADTH_RULES nedan), en rad per dag.
@@ -35,7 +35,7 @@ import pandas as pd
 DIR = os.path.dirname(os.path.realpath(__file__))
 PRICE_FILE = os.path.join(DIR, "data", "price_history.json")
 ARCH = os.path.join(DIR, "archive")
-VERSION = "1.0"
+VERSION = "1.1"
 
 BREADTH_RULES = {"name": "U1", "min_price": 5.0, "min_bars": 200, "top_n": 3000}
 INDEX_TICKERS = ["SPY", "QQQ", "QQQE", "RSP", "IWM", "IWO", "MDY", "DIA", "SMH", "^VIX"]
@@ -108,9 +108,12 @@ def load():
     return big.sort_index(kind="stable")
 
 
-DAILY_COLS = ["ticker", "sector", "industry", "open", "high", "low", "close", "prev_close", "chg_pct", "volume", "dollar_vol",
-              "sma20", "sma50", "sma200", "ema10", "ema20", "atr14", "adr20_pct", "hi52", "lo52", "new_hi52", "new_lo52",
-              "avgvol30", "avgvol50", "dvol50", "ext50_atr", "bars"]
+DAILY_COLS = ["ticker", "sector", "industry", "open", "high", "low", "close", "prev_close", "volume"]
+# v1.1: bara radata (OHLCV + foregaende stangning). Allt annat (SMA, ATR, 52v, Ext50 ...) raknas om ur
+# historiken. Ca 35 byte/aktie/dag komprimerat = ~50 MB/ar for ~6000 aktier (v1.0 med harledda matt: ~140 MB/ar).
+# Index-filen behaller alla matt (10 rader/dag).
+INDEX_COLS = ["open", "high", "low", "close", "prev_close", "chg_pct", "volume", "sma20", "sma50", "sma200", "ema10", "ema20",
+              "atr14", "hi52", "lo52", "ext50_atr", "bars"]
 
 
 def day_table(big, day):
@@ -118,7 +121,7 @@ def day_table(big, day):
         tab = big.loc[[day]]
     except KeyError:
         return pd.DataFrame(columns=DAILY_COLS)
-    return tab.reset_index(drop=True)[DAILY_COLS]
+    return tab.reset_index(drop=True)
 
 
 def breadth_row(tab, day, backfill):
@@ -205,7 +208,7 @@ def main(today_only=False):
     # 1) radata for senaste dagen (point in time) -- skrivs aldrig over
     dpath = os.path.join(ARCH, "daily", last[:4], f"{last}.csv.gz")
     if not os.path.exists(dpath):
-        tab = day_table(data, last)
+        tab = day_table(data, last)[DAILY_COLS]
         write_csv_gz(tab, dpath)
         print(f"Radata {last}: {len(tab)} aktier -> {dpath}")
     else:
@@ -218,11 +221,11 @@ def main(today_only=False):
         for t, m in idx.items():
             if last in m.index:
                 r = m.loc[last]
-                rows.append([t] + [r[k] for k in DAILY_COLS[3:]])
+                rows.append([t] + [r[k] for k in INDEX_COLS])
         if rows:
             ipath = os.path.join(ARCH, "index", last[:4], f"{last}.csv")
             os.makedirs(os.path.dirname(ipath), exist_ok=True)
-            pd.DataFrame(rows, columns=["ticker"] + DAILY_COLS[3:]).to_csv(ipath, index=False, float_format="%.6g")
+            pd.DataFrame(rows, columns=["ticker"] + INDEX_COLS).to_csv(ipath, index=False, float_format="%.6g")
 
     # 3) bredd: dagens rad (backfill 0) + bakatfyllning av saknade dagar forsta gangen (backfill 1)
     new_rows = []

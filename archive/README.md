@@ -4,7 +4,7 @@ Skrivs varje vardagskväll av `daily_archive.py` (GitHub Actions, efter RS-körn
 
 | Fil | Innehåll |
 |---|---|
-| `daily/ÅÅÅÅ/ÅÅÅÅ-MM-DD.csv.gz` | Rådata: en rad per aktie som handlades dagen, **inget urval**. Kurs, volym, dollarvolym, SMA20/50/200, EMA10/20, ATR14 (Wilder), ADR20 %, 52v topp/botten, nya 52v-toppar/-bottnar, snittvolym 30/50, dollarvolym 50, Ext50 (Swing Data-formeln), antal staplar. |
+| `daily/ÅÅÅÅ/ÅÅÅÅ-MM-DD.csv.gz` | Rådata: en rad per aktie som handlades dagen, **inget urval**: sektor, bransch, open, high, low, close, föregående stängning, volym. Alla andra mått (SMA, ATR, 52v, Ext50 …) räknas om ur historiken. Ca 50 MB/år. |
 | `index/ÅÅÅÅ/ÅÅÅÅ-MM-DD.csv` | Samma mått för SPY, QQQ, QQQE, RSP, IWM, IWO, MDY, DIA, SMH och ^VIX (TrendTracker-listan). |
 | `breadth_daily.csv` | Bredd med fast definition, en rad per dag. |
 
