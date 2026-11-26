@@ -6,6 +6,14 @@
 #   3. Batch yfinance downloads (100 tickers at a time) → ~25 min instead of hours
 #   4. Removed broken session/user-agent hack (curl_cffi handles this transparently)
 #   5. pandas 2.x compatible (MultiIndex column handling)
+#
+# CHANGELOG 2026-11-26 (MBH, Alpaca steg 3):
+#   6. Alpaca-reserv (alpaca_reserv.py): tickers som Yahoo inte levererar (batch-fel/saknad data)
+#      hämtas från Alpaca (adjustment=all, feed=sip). Fungerar Yahoo används Alpaca inte.
+#      Rad "ALPACA-RESERV: ..." i loggen och i jobbsammanfattningen.
+#   7. Spärr: under 90 % levererade tickers -> sys.exit(1), RS-filerna skrivs inte om.
+#   8. KONTROLL: RS_SIMULERA_YAHOO_BATCHER=N simulerar Yahoo-avbrott för N batcher; Yahoo hämtas
+#      ändå som facit och jämförs mot Alpaca (gräns 1 %). RS_KONTROLL_FEL=1 lägger in känt fel (+5 %).
 
 import requests
 import json
@@ -18,7 +26,10 @@ import pandas as pd
 import dateutil.relativedelta
 import numpy as np
 import re
+import sys
 from io import StringIO
+
+import alpaca_reserv
 from time import sleep
 
 from datetime import date
@@ -94,6 +105,12 @@ YFINANCE_EXCHANGE_MAP = {
 
 # Batch size for yfinance bulk downloads — 100 is a sweet spot (speed vs reliability)
 BATCH_SIZE = 100
+
+# Alpaca-reserv / kontroll (MBH 2026-11-26)
+SIM_BATCHER = int(os.environ.get("RS_SIMULERA_YAHOO_BATCHER", "0") or 0)  # 0 = normal drift
+YAHOO_FACIT = {}
+KONTROLL_GRANS = 0.01   # 1 % (utdelningsjustering kan skilja något mellan Yahoo och Alpaca)
+MIN_TACKNING = 0.90     # under 90 % levererade tickers -> jobbet fallerar
 
 # ── Ticker list retrieval ────────────────────────────────────────────────────
 
@@ -563,6 +580,22 @@ def load_prices_from_yahoo(securities, info={}):
 
         print(f"\n── Batch {batch_idx + 1}/{total_batches}: {len(batch)} tickers ──")
 
+        # KONTROLL (MBH 2026-11-26): simulerat Yahoo-avbrott för de första SIM_BATCHER batcherna.
+        # Yahoo hämtas ändå i bakgrunden som FACIT för jämförelsen mot Alpaca, men används inte.
+        if batch_idx < SIM_BATCHER:
+            try:
+                df_facit = yf.download(tickers=batch_tickers, start=start_date, end=end_date,
+                                       auto_adjust=True, progress=False, threads=True, ignore_tz=True)
+                esc_to_orig = {escape_ticker(t): t for t in original_tickers}
+                for esc, c in parse_batch_download(df_facit, batch_tickers).items():
+                    YAHOO_FACIT[esc_to_orig.get(esc, esc)] = c
+            except Exception as e:
+                print(f"  (facit-hämtning misslyckades: {e})")
+            print(f"  SIMULERAT Yahoo-avbrott (prov) - batch {batch_idx + 1} lämnas till Alpaca-reserven")
+            failed_tickers.extend(original_tickers)
+            batch_times.append(time.time() - batch_start)
+            continue
+
         try:
             # yfinance batch download
             # auto_adjust=True → split/dividend adjusted prices (default since 0.2.x)
@@ -645,6 +678,45 @@ def load_prices_from_yahoo(securities, info={}):
             write_price_history_file(tickers_dict)
             write_ticker_info_file(TICKER_INFO_DICT)
 
+    # ── Alpaca-reserv (MBH 2026-11-26, steg 3): bara tickers som Yahoo inte levererade ──
+    saknas = [t for t in dict.fromkeys(failed_tickers) if t not in tickers_dict]
+    stat = {"begarda": 0, "levererade": 0, "anrop": 0, "avvisade": [], "fel": None}
+    if saknas:
+        print(f"\n*** Alpaca-reserv: {len(saknas)} tickers saknas från Yahoo ***")
+        reserv, stat = alpaca_reserv.hamta_reserv(saknas, start_date)
+        sec_by_ticker = {s["ticker"]: s for s in ordered}
+        for original, candles in reserv.items():
+            sec = sec_by_ticker.get(original)
+            if sec is None:
+                continue
+            ticker_data = {"candles": candles}
+            enrich_ticker_data(ticker_data, sec)
+            info = (TICKER_INFO_DICT.get(original) or {}).get("info") or {}
+            ticker_data["industry"] = info.get("industry", "Unknown")
+            if "sector" in info:
+                ticker_data["sector"] = info["sector"]
+            yf_exchange = info.get("exchange")
+            if yf_exchange and ticker_data.get("universe") in (None, "n/a", UNKNOWN):
+                ticker_data["universe"] = yf_exchange
+            tickers_dict[original] = ticker_data
+        failed_tickers = [t for t in failed_tickers if t not in tickers_dict]
+    rad = (f"ALPACA-RESERV: Yahoo saknade {len(saknas)} · Alpaca levererade {stat['levererade']} "
+           f"· anrop {stat['anrop']} · avvisade {len(stat['avvisade'])}"
+           + (f" · FEL {stat['fel']}" if stat.get("fel") else ""))
+    print(rad)
+    _sammanfattning(rad)
+
+    if YAHOO_FACIT:
+        _kontroll_mot_facit(tickers_dict)
+
+    # Spärr: för lite data -> jobbet ska fallera (inga trasiga RS-filer committas)
+    andel = len(tickers_dict) / max(1, len(ordered))
+    print(f"Täckning: {len(tickers_dict)}/{len(ordered)} = {andel:.1%}")
+    if andel < MIN_TACKNING:
+        _sammanfattning(f"STOPP: täckning {andel:.1%} < {MIN_TACKNING:.0%} - RS-filerna skrivs inte om.")
+        print(f"STOPP: täckning {andel:.1%} under {MIN_TACKNING:.0%}")
+        sys.exit(1)
+
     # Final save
     write_price_history_file(tickers_dict)
     write_ticker_info_file(TICKER_INFO_DICT)
@@ -658,6 +730,53 @@ def load_prices_from_yahoo(securities, info={}):
             f.write("\n".join(unique_failed))
 
     return tickers_dict
+
+# ── Alpaca-reserv: kontroll och sammanfattning (MBH 2026-11-26) ───────────────
+
+def _sammanfattning(text):
+    fil = os.environ.get("GITHUB_STEP_SUMMARY")
+    if fil:
+        with open(fil, "a", encoding="utf-8") as f:
+            f.write(text + "\n\n")
+
+def _kontroll_mot_facit(tickers_dict):
+    """Jämför Alpaca-reservens stängningar mot Yahoo (oberoende facit) för de simulerade batcherna.
+    Senaste gemensamma dag och dagen ~252 handelsdagar tidigare. Gräns KONTROLL_GRANS.
+    RS_KONTROLL_FEL=1 lägger in ett känt fel (+5 % på första tickern) som MÅSTE upptäckas."""
+    lika = avviker = saknas = 0
+    exempel = []
+    inlagt = os.environ.get("RS_KONTROLL_FEL") == "1"
+    for i, (t, yc) in enumerate(sorted(YAHOO_FACIT.items())):
+        ad = tickers_dict.get(t)
+        if not ad:
+            saknas += 1
+            continue
+        a = {c["datetime"]: c["close"] for c in ad["candles"]}
+        y = {c["datetime"]: c["close"] for c in yc}
+        gem = sorted(set(a) & set(y))
+        if len(gem) < 2:
+            saknas += 1
+            continue
+        punkter = [gem[-1], gem[max(0, len(gem) - 253)]]
+        fel = False
+        for d in punkter:
+            av = a[d] * (1.05 if (inlagt and i == 0) else 1.0)
+            diff = abs(av / y[d] - 1)
+            if diff > KONTROLL_GRANS:
+                fel = True
+                if len(exempel) < 8:
+                    exempel.append(f"{t} {dt.datetime.utcfromtimestamp(d).date()} Alpaca {av:.2f} / Yahoo {y[d]:.2f} ({diff:+.2%})")
+        if fel:
+            avviker += 1
+        else:
+            lika += 1
+    status = "OK" if avviker == 0 and saknas <= 0.05 * max(1, len(YAHOO_FACIT)) else "AVVIKELSE"
+    rad = (f"KONTROLL {status}{' (inlagt fel)' if inlagt else ''}: {len(YAHOO_FACIT)} facit-tickers · "
+           f"{lika} lika (<= {KONTROLL_GRANS:.1%}) · {avviker} avviker · {saknas} saknas hos Alpaca")
+    print(rad)
+    for e in exempel:
+        print("   " + e)
+    _sammanfattning(rad + ("\n\n" + "\n".join("- " + e for e in exempel) if exempel else ""))
 
 # ── TD Ameritrade (kept for compatibility, not actively maintained) ────────────
 

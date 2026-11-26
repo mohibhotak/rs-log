@@ -3,12 +3,23 @@ name: Generate RS Ratings
 # MBH-kopia av Fred6725/relative-strength (Apache-2.0).
 # Skillnad mot originalet: CSV-filerna committas i DETTA repo (output/), ingen extra token,
 # ingen push till rs-log eller TradingView-seeds.
+# 2026-11-26 (MBH steg 3): Alpaca-reserv (alpaca_reserv.py) for tickers som Yahoo inte levererar.
+#   Secrets ALPACA_KEY_ID / ALPACA_SECRET. Sparr: under 90 % tackning -> jobbet fallerar, inget committas.
 # 22:15 UTC mandag-fredag = 17:15 New York vintertid (efter stangning), fore SectorFlow-natten (03:00 Stockholm).
 
 on:
   schedule:
     - cron: '15 22 * * 1-5'
   workflow_dispatch:
+    inputs:
+      simulera_batcher:
+        description: 'KONTROLL: antal Yahoo-batcher som simuleras som avbrott (0 = normal korning). >0 committar INGENTING.'
+        required: false
+        default: '0'
+      kontroll_fel:
+        description: 'KONTROLL: 1 = lagg in ett kant fel (+5 %) som maste upptackas'
+        required: false
+        default: '0'
 
 permissions:
   contents: write
@@ -38,6 +49,11 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run relative strength calculation
+        env:
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          RS_SIMULERA_YAHOO_BATCHER: ${{ github.event.inputs.simulera_batcher || '0' }}
+          RS_KONTROLL_FEL: ${{ github.event.inputs.kontroll_fel || '0' }}
         run: python relative-strength.py true
 
       - name: Check outputs exist
@@ -48,6 +64,8 @@ jobs:
           head -3 output/rs_industries.csv
 
       - name: Commit outputs and ticker_info cache
+        # Provkorningar (simulerat Yahoo-avbrott) committar aldrig
+        if: ${{ (github.event.inputs.simulera_batcher || '0') == '0' }}
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
